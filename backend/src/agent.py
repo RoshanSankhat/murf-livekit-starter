@@ -1,6 +1,6 @@
 import logging
 
-from dotenv import load_dotenv
+from dotenv import load_dotenv  # type: ignore
 from livekit import rtc
 from livekit.agents import (
     Agent,
@@ -9,42 +9,54 @@ from livekit.agents import (
     JobContext,
     JobProcess,
     cli,
-    inference,
-    tokenize,
     room_io,
 )
-from livekit.plugins import murf, silero, google, deepgram, noise_cancellation
-from livekit.plugins.turn_detector.multilingual import MultilingualModel
+from livekit.plugins import murf, silero, groq, deepgram, noise_cancellation
 
 logger = logging.getLogger("agent")
 
 load_dotenv(".env.local")
 
-# Change this prompt to change what your voice agent does.
-# See README.md for example prompts (customer support, language tutor, receptionist).
-SYSTEM_PROMPT = """You are a friendly and efficient customer support agent for a tech company. Help users with account issues, billing questions, and product troubleshooting. Be concise, empathetic, and solution-oriented. If you don't know something, say so honestly and offer to escalate. Your responses are concise and without complex formatting, emojis, or symbols."""
+SYSTEM_PROMPT = """
+IDENTITY:
+You are Alexa, a friendly and encouraging Voice Coach at "R's World". You help students and young learners practice reading, pronunciation, and basic vocabulary.
+
+OBJECTIVES:
+1. Guide the learner through a fun, supportive practice session.
+2. Give positive reinforcement and gentle feedback on their responses.
+3. Check periodically if the learner wants to continue or try another exercise.
+
+KNOWLEDGE:
+- You know general primary and secondary school reading materials, vocabulary, and basic grammar concepts.
+- You do NOT know advanced college subjects, non-educational topics, or real-time news/events.
+
+LANGUAGE & PRONUNCIATION (CRITICAL):
+- DEFAULT LANGUAGE IS ENGLISH: Always begin and default to clear, standard English.
+- CODE-MIXING / SWITCHING: When the user speaks Hindi or Hinglish, respond using Devanagari script for Hindi words (e.g., "नमस्ते! मैं आपकी पढ़ाई में help कर सकती हूँ।"). 
+- DEVANAGARI RULE: Writing Hindi words in Devanagari (जैसे "अच्छा", "कोशिश", "सवाल") forces the TTS engine to pronounce Hindi words with perfect native accent while keeping English words natural.
+
+GUARDRAILS & REFUSALS:
+- Off-topic queries: Politely refuse non-educational topics (entertainment, finance, political news) and steer back to learning.
+  Refusal: "I can only help with study and learning activities. Let us return to today's lesson!"
+- Never Shame: NEVER use words like "bad", "wrong", "dumb", or "incorrect". Frame mistakes as positive learning opportunities.
+- Never Diagnose: NEVER suggest or mention learning disabilities (e.g., Dyslexia, ADHD, slow learning).
+- Escalation: If the learner is frustrated or asks for human support, run the escalation script.
+
+ESCALATION SCRIPT:
+"If you are finding this topic difficult, I can connect you with our senior teacher. Would you like me to forward your request?"
+
+STYLE (OPTIMIZED FOR SPEECH):
+- Keep sentences short and punchy (under 15 words per turn).
+- NEVER use markdown formatting, bullet points, brackets, special symbols, or emojis in your spoken responses.
+"""
+
+# Default English greeting using R's World
+GREETING_TEXT = "Hello! I am Alexa, your learning coach from R's World. What would you like to practice today—English vocabulary or reading?"
 
 
 class Assistant(Agent):
     def __init__(self) -> None:
         super().__init__(instructions=SYSTEM_PROMPT)
-
-    # To add tools, use the @function_tool decorator.
-    # Here's an example that adds a simple weather tool.
-    # You also have to add `from livekit.agents import function_tool, RunContext` to the top of this file
-    # @function_tool
-    # async def lookup_weather(self, context: RunContext, location: str):
-    #     """Use this tool to look up current weather information in the given location.
-    #
-    #     If the location is not supported by the weather service, the tool will indicate this. You must tell the user the location's weather is unavailable.
-    #
-    #     Args:
-    #         location: The location to look up weather information for (e.g. city name)
-    #     """
-    #
-    #     logger.info(f"Looking up weather for {location}")
-    #
-    #     return "sunny with a temperature of 70 degrees."
 
 
 server = AgentServer()
@@ -59,59 +71,26 @@ server.setup_fnc = prewarm
 
 @server.rtc_session(agent_name="my-agent")
 async def my_agent(ctx: JobContext):
-    # Logging setup
-    # Add any other context you want in all log entries here
     ctx.log_context_fields = {
         "room": ctx.room.name,
     }
 
-    # Set up a voice AI pipeline using Murf Falcon, Gemini, Deepgram, and the LiveKit turn detector
     session = AgentSession(
-        # Speech-to-text (STT) is your agent's ears, turning the user's speech into text that the LLM can understand
-        # See all available models at https://docs.livekit.io/agents/models/stt/
-        stt=deepgram.STT(model="nova-3"),
-        # A Large Language Model (LLM) is your agent's brain, processing user input and generating a response
-        # See all available models at https://docs.livekit.io/agents/models/llm/
-        llm=google.LLM(
-                model="gemini-3.5-flash-lite",
-            ),
-        # Text-to-speech (TTS) is your agent's voice, turning the LLM's text into speech that the user can hear
-        # See all available models as well as voice selections at https://docs.livekit.io/agents/models/tts/
+        stt=deepgram.STT(
+            model="nova-3",
+            language="multi",
+        ),
+        llm=groq.LLM(
+            model="llama-3.3-70b-versatile",
+        ),
         tts=murf.TTS(
-                voice="Anisha", 
-                locale="en-IN",
-                style="Conversation",
-                tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=2),
-                text_pacing=True
-            ),
-        # VAD and turn detection are used to determine when the user is speaking and when the agent should respond
-        # See more at https://docs.livekit.io/agents/build/turns
-        turn_detection=MultilingualModel(),
+            model="falcon-2",
+            voice="Alicia",
+        ),
         vad=ctx.proc.userdata["vad"],
-        # allow the LLM to generate a response while waiting for the end of turn
-        # See more at https://docs.livekit.io/agents/build/audio/#preemptive-generation
         preemptive_generation=True,
     )
 
-    # To use a realtime model instead of a voice pipeline, use the following session setup instead.
-    # (Note: This is for the OpenAI Realtime API. For other providers, see https://docs.livekit.io/agents/models/realtime/))
-    # 1. Install livekit-agents[openai]
-    # 2. Set OPENAI_API_KEY in .env.local
-    # 3. Add `from livekit.plugins import openai` to the top of this file
-    # 4. Use the following session setup instead of the version above
-    # session = AgentSession(
-    #     llm=openai.realtime.RealtimeModel(voice="marin")
-    # )
-
-    # # Add a virtual avatar to the session, if desired
-    # # For other providers, see https://docs.livekit.io/agents/models/avatar/
-    # avatar = hedra.AvatarSession(
-    #   avatar_id="...",  # See https://docs.livekit.io/agents/models/avatar/plugins/hedra
-    # )
-    # # Start the avatar and wait for it to join
-    # await avatar.start(session, room=ctx.room)
-
-    # Start the session, which initializes the voice pipeline and warms up the models
     await session.start(
         agent=Assistant(),
         room=ctx.room,
@@ -129,6 +108,9 @@ async def my_agent(ctx: JobContext):
 
     # Join the room and connect to the user
     await ctx.connect()
+
+    # FIRST-TURN GREETING: Spoken greeting on connection
+    await session.say(GREETING_TEXT, allow_interruptions=True)
 
 
 if __name__ == "__main__":
