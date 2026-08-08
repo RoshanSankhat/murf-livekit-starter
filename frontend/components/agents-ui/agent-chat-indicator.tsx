@@ -30,7 +30,7 @@ const motionAnimationProps = {
   exit: 'hidden',
 };
 
-const agentChatIndicatorVariants = cva('bg-muted-foreground inline-block size-2.5 rounded-full', {
+const agentChatIndicatorVariants = cva('inline-block size-2.5 rounded-full bg-sky-400', {
   variants: {
     size: {
       sm: 'size-2.5',
@@ -43,49 +43,33 @@ const agentChatIndicatorVariants = cva('bg-muted-foreground inline-block size-2.
   },
 });
 
-/**
- * Props for the AgentChatIndicator component.
- */
 export interface AgentChatIndicatorProps extends MotionProps {
-  /**
-   * The size of the indicator dot.
-   * @defaultValue 'md'
-   */
   size?: 'sm' | 'md' | 'lg';
-  /**
-   * Additional CSS class names to apply to the indicator.
-   */
   className?: string;
-  /**
-   * Allows getting a ref to the component instance.\nOnce the component unmounts, React will set `ref.current` to `null`\n(or call the ref with `null` if you passed a callback ref).\n@see {@link https://react.dev/learn/referencing-values-with-refs#refs-and-the-dom React Docs}
-   */
+  stateText?: string;
   ref?: Ref<HTMLSpanElement>;
 }
 
-/**
- * An animated indicator that shows the agent is processing or thinking.
- * Displays as a pulsing dot, typically used in chat interfaces.
- *
- * @extends ComponentProps<'span'>
- *
- * @example
- * ```tsx
- * {agentState === 'thinking' && <AgentChatIndicator size="md" />}
- * ```
- */
 export function AgentChatIndicator({
   size = 'md',
   className,
+  stateText = 'Alexa is active...',
   ...props
 }: AgentChatIndicatorProps &
   ComponentProps<'span'> &
   VariantProps<typeof agentChatIndicatorVariants>) {
   return (
-    <motion.span
-      {...motionAnimationProps}
-      transition={{ duration: 0.1, ease: 'linear' as const }}
-      className={cn(agentChatIndicatorVariants({ size }), className)}
-      {...props}
-    />
+    <div className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-sky-500/30 bg-black/60 backdrop-blur-sm">
+      <motion.span
+        {...motionAnimationProps}
+        transition={{ duration: 0.1, ease: 'linear' as const }}
+        className={cn(agentChatIndicatorVariants({ size }), className)}
+        style={{ backgroundColor: '#38bdf8' }}
+        {...props}
+      />
+      <span className="text-xs font-semibold tracking-wide" style={{ color: '#e0f2fe' }}>
+        {stateText}
+      </span>
+    </div>
   );
 }
