@@ -43,10 +43,33 @@ export async function POST(req: Request) {
         { ignoreUnknownFields: true }
       );
     }
-      
-    // Generate participant token
-    const participantName = 'user';
-    const participantIdentity = `voice_assistant_user_${Math.floor(Math.random() * 10_000)}`;
+
+    // ------------------------------------------------------------------
+    // STABLE IDENTITY (fixed for Day 4 memory)
+    // ------------------------------------------------------------------
+    // Previously this generated a random identity AND a random room name
+    // on every connection, which made per-caller memory impossible: the
+    // backend saw a "new" stranger every single call.
+    //
+    // Now: if the client sends a participantName in the POST body, we use
+    // a slug of that as the stable identity. Otherwise we fall back to a
+    // fixed test identity so at least repeated calls from you (during
+    // testing) are recognized as the same caller.
+    //
+    // TODO before real deployment: replace the fallback with something
+    // that actually identifies a real caller (SIP phone number, a login,
+    // or a name-entry screen the user fills in before connecting).
+    const requestedName: string | undefined = body?.participantName;
+
+    const participantName = requestedName?.trim() || 'Test User';
+
+    const participantIdentity = requestedName?.trim()
+      ? requestedName.trim().toLowerCase().replace(/\s+/g, '_')
+      : 'test_user_fixed';
+
+    // Room name can still be random/unique per session — only the
+    // participant IDENTITY needs to stay stable across calls, since
+    // that's what the backend keys memory off of.
     const roomName = `voice_assistant_room_${Math.floor(Math.random() * 10_000)}`;
 
     const participantToken = await createParticipantToken(
