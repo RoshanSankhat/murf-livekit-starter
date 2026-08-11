@@ -3,7 +3,7 @@ import logging
 import os
 
 from dotenv import load_dotenv
-from livekit import rtc
+from livekit import api, rtc
 
 from livekit.agents import (
     Agent,
@@ -71,7 +71,6 @@ CORE PURPOSE:
 You support a broad range of school-level Learning and Literacy topics.
 
 SUPPORTED TOPICS INCLUDE:
-
 - English language
 - Reading
 - Writing
@@ -98,7 +97,6 @@ SUPPORTED TOPICS INCLUDE:
 - Other normal primary and secondary school learning topics
 
 OBJECTIVES:
-
 1. Help learners understand educational concepts clearly.
 2. Explain difficult concepts using simple language.
 3. Give examples and practice questions when useful.
@@ -131,20 +129,22 @@ OBJECTIVES:
     NEVER claim a question came from the practice bank unless it was
     actually retrieved from the practice database.
 
-KNOWLEDGE:
+13. OUTBOUND COMPLIANCE (DAY 6):
+    If the user indicates they want to stop, opt-out, or hang up,
+    say a brief, polite goodbye, then IMMEDIATELY call the end_call
+    tool to actually end the call. Do not just acknowledge verbally -
+    you must call end_call every time the user asks to stop or hang up.
 
-- You can help with normal primary and secondary school
-  educational subjects.
+KNOWLEDGE:
+- You can help with normal primary and secondary school educational subjects.
 - You can explain concepts step by step.
 - You can solve educational problems and explain the reasoning.
 - You can provide examples and practice exercises.
 - You should not pretend to know information you are unsure about.
-- You do NOT need to restrict learning to English, reading,
-  or vocabulary.
+- You do NOT need to restrict learning to English, reading, or vocabulary.
 - Advanced college-level subjects may be outside your scope.
 
 LANGUAGE & PRONUNCIATION (CRITICAL):
-
 - DEFAULT LANGUAGE IS ENGLISH:
   Always begin, greet, and default to clear standard English.
 
@@ -158,21 +158,16 @@ LANGUAGE & PRONUNCIATION (CRITICAL):
   script so the TTS engine pronounces them naturally.
 
 LEARNING STYLE:
-
 - Explain concepts according to the learner's level.
 - Use simple examples before difficult examples.
 - For mathematics, show the steps clearly.
 - For science, explain concepts using simple real-world examples.
-- For English, help with vocabulary, grammar, reading,
-  pronunciation, spelling, and writing.
-- For history and geography, explain facts clearly and
-  provide useful context.
-- If the learner says they do not understand,
-  explain the same concept in a simpler way.
+- For English, help with vocabulary, grammar, reading, pronunciation, spelling, and writing.
+- For history and geography, explain facts clearly and provide useful context.
+- If the learner says they do not understand, explain the same concept in a simpler way.
 - Never make the learner feel embarrassed for asking questions.
 
 MEMORY & CONSENT (CRITICAL):
-
 - Before calling save_caller_info, you MUST ask the learner
   out loud for permission, e.g.:
   "Can I remember this for next time we talk?"
@@ -184,7 +179,6 @@ MEMORY & CONSENT (CRITICAL):
   actually succeeded.
 
 GUARDRAILS & REFUSALS:
-
 - Educational questions should be answered whenever possible.
 - Do NOT refuse a question merely because it is mathematics,
   science, history, geography, or another school subject.
@@ -207,12 +201,10 @@ Let us choose something you would like to learn."
   run the escalation script.
 
 ESCALATION SCRIPT:
-
 "If you are finding this topic difficult, I can connect you
 with our senior teacher. Would you like me to forward your request?"
 
 STYLE (OPTIMIZED FOR SPEECH):
-
 - Keep sentences short and easy to understand.
 - Use natural conversational English.
 - Avoid unnecessary technical language.
@@ -222,8 +214,16 @@ STYLE (OPTIMIZED FOR SPEECH):
 
 
 # ------------------------------------------------------------------
-# FIRST-TIME GREETING
+# GREETINGS & COMPLIANT OPENINGS
 # ------------------------------------------------------------------
+
+# Day 6 Strict Outbound Opening Requirement (Who, Why, How to Opt-out)
+OUTBOUND_OPENING = (
+    "Hello! This is Alexa, your Learning and Literacy Coach from R's World, "
+    "calling for your scheduled daily educational practice session. "
+    "If you would like to stop receiving these calls, you can say stop calling or hang up at any time. "
+    "Are you ready for a quick practice question today?"
+)
 
 FIRST_TIME_GREETING = (
     "Hello! I am Alexa, your learning coach from R's World. "
@@ -237,7 +237,6 @@ FIRST_TIME_GREETING = (
 
 def resolve_user_id(ctx: JobContext) -> str:
     """Derive a stable per-caller user_id."""
-
     for participant in ctx.room.remote_participants.values():
         if participant.identity:
             return participant.identity
@@ -251,7 +250,6 @@ async def resolve_user_id_async(
     poll_interval: float = 0.1,
 ) -> str:
     """Same as resolve_user_id, but waits briefly for participant identity."""
-
     elapsed = 0.0
 
     while elapsed < timeout:
@@ -270,13 +268,20 @@ async def resolve_user_id_async(
     return "guest"
 
 
+def is_sip_participant(ctx: JobContext) -> bool:
+    """Check if any remote participant connected over SIP telephony (phone call)."""
+    for participant in ctx.room.remote_participants.values():
+        if participant.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP:
+            return True
+    return False
+
+
 # ------------------------------------------------------------------
 # DATABASE HELPERS
 # ------------------------------------------------------------------
 
 async def get_latest_record(user_id: str):
     """Retrieve the saved caller record for this specific user_id."""
-
     return await asyncio.to_thread(
         db.get_caller_record,
         user_id,
@@ -290,7 +295,6 @@ async def persist_caller_record(
     facts: dict,
 ):
     """Save/update a single caller record for this specific user_id."""
-
     await asyncio.to_thread(
         db.save_caller_record,
         user_id,
@@ -305,7 +309,6 @@ async def fetch_exercise(
     level: str,
 ):
     """Run the sync exercise lookup off the event loop."""
-
     return await asyncio.to_thread(
         db.get_exercise,
         subject,
@@ -342,9 +345,7 @@ _TOPIC_KEYWORDS = {
 }
 
 
-def guess_topic_from_text(
-    user_texts: list[str],
-):
+def guess_topic_from_text(user_texts: list[str]):
     combined = " ".join(user_texts).lower()
 
     for keyword, label in _TOPIC_KEYWORDS.items():
@@ -407,51 +408,23 @@ _LEVEL_KEYWORDS = {
 
 
 def is_practice_request(text: str) -> bool:
-    """
-    Detect an explicit request for a practice question.
-
-    This prevents the database lookup from firing for normal
-    educational conversation.
-    """
-
     normalized = text.lower().strip()
-
-    return any(
-        keyword in normalized
-        for keyword in _PRACTICE_KEYWORDS
-    )
+    return any(keyword in normalized for keyword in _PRACTICE_KEYWORDS)
 
 
 def detect_subject(text: str):
-    """
-    Map the learner's words to one supported database subject.
-    """
-
     normalized = text.lower()
-
-    # Longer phrases are checked first.
-    for keyword in sorted(
-        _SUBJECT_KEYWORDS,
-        key=len,
-        reverse=True,
-    ):
+    for keyword in sorted(_SUBJECT_KEYWORDS, key=len, reverse=True):
         if keyword in normalized:
             return _SUBJECT_KEYWORDS[keyword]
-
     return None
 
 
 def detect_level(text: str) -> str:
-    """
-    Map common difficulty words to database levels.
-    """
-
     normalized = text.lower()
-
     for keyword, level in _LEVEL_KEYWORDS.items():
         if keyword in normalized:
             return level
-
     return "beginner"
 
 
@@ -461,10 +434,7 @@ def detect_level(text: str) -> str:
 
 _summary_client = AsyncOpenAI(
     base_url=COHERE_BASE_URL,
-    api_key=os.getenv(
-        "COHERE_API_KEY",
-        "",
-    ).strip(),
+    api_key=os.getenv("COHERE_API_KEY", "").strip(),
 )
 
 
@@ -472,19 +442,12 @@ async def summarize_session_topic(
     user_texts: list[str],
     fallback: str,
 ) -> str:
-    """Summarize the caller's messages into a short topic phrase using Cohere."""
-
     conversation_snippet = " | ".join(
-        t
-        for t in user_texts[-8:]
-        if t.strip()
+        t for t in user_texts[-8:] if t.strip()
     )
 
     if len(conversation_snippet) < 15:
-        return (
-            guess_topic_from_text(user_texts)
-            or fallback
-        )
+        return guess_topic_from_text(user_texts) or fallback
 
     try:
         response = await asyncio.wait_for(
@@ -498,28 +461,12 @@ async def summarize_session_topic(
                         "content": (
                             "You summarize a short piece of tutoring "
                             "conversation into a topic label. Reply with "
-                            "ONLY the topic label itself - nothing else, "
-                            "no explanation, no restating these instructions."
+                            "ONLY the topic label itself - nothing else."
                         ),
                     },
                     {
                         "role": "user",
-                        "content": (
-                            "Conversation: 'can you help me with 7 times 8' "
-                            "| 'what about 9 times 6'\n"
-                            "Topic label:"
-                        ),
-                    },
-                    {
-                        "role": "assistant",
-                        "content": "multiplication tables",
-                    },
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Conversation: {conversation_snippet}\n"
-                            "Topic label:"
-                        ),
+                        "content": f"Conversation: {conversation_snippet}\nTopic label:",
                     },
                 ],
             ),
@@ -527,59 +474,15 @@ async def summarize_session_topic(
         )
 
         raw_content = response.choices[0].message.content
+        summary = (raw_content or "").strip().strip('"').strip("'")
 
-        summary = (
-            (raw_content or "")
-            .strip()
-            .strip('"')
-            .strip("'")
-        )
-
-        if not summary:
-            return (
-                guess_topic_from_text(user_texts)
-                or fallback
-            )
-
-        bad_signals = [
-            "topic phrase",
-            "topic label",
-            "5-8 words",
-            "punctuation",
-            "should not quote",
-            "no punctuation",
-            "we need to output",
-            "instructions",
-        ]
-
-        looks_like_echo = any(
-            signal in summary.lower()
-            for signal in bad_signals
-        )
-
-        if looks_like_echo:
-            return (
-                guess_topic_from_text(user_texts)
-                or fallback
-            )
-
-        if len(summary) <= 100:
+        if summary and len(summary) <= 100:
             return summary
 
-    except asyncio.TimeoutError:
-        logger.warning(
-            "Cohere topic summary generation timed out."
-        )
-
     except Exception as e:
-        logger.error(
-            f"Cohere topic summary generation failed: {e}"
-        )
+        logger.error(f"Cohere topic summary generation failed: {e}")
 
-    return (
-        guess_topic_from_text(user_texts)
-        or fallback
-    )
+    return guess_topic_from_text(user_texts) or fallback
 
 
 # ------------------------------------------------------------------
@@ -588,16 +491,10 @@ async def summarize_session_topic(
 
 class Assistant(Agent):
 
-    def __init__(
-        self,
-        user_id: str,
-    ) -> None:
-
-        super().__init__(
-            instructions=SYSTEM_PROMPT
-        )
-
+    def __init__(self, user_id: str, ctx: JobContext) -> None:
+        super().__init__(instructions=SYSTEM_PROMPT)
         self.user_id = user_id
+        self._ctx = ctx
 
     # --------------------------------------------------------------
     # DAY 5 - DETERMINISTIC LOOKUP HOOK
@@ -608,192 +505,65 @@ class Assistant(Agent):
         turn_ctx,
         new_message,
     ) -> None:
-        """
-        Day 5 deterministic practice lookup.
+        user_text = (new_message.text_content or "").strip()
 
-        This runs after the user's turn and before the normal
-        LLM response.
-
-        When the learner explicitly asks for a practice question,
-        the question is fetched directly from PostgreSQL.
-        """
-
-        user_text = (
-            new_message.text_content or ""
-        ).strip()
-
-        if not user_text:
+        if not user_text or not is_practice_request(user_text):
             return
 
-        logger.info(
-            f"DAY 5 HOOK: learner said: {user_text}"
-        )
-
-        # Do not trigger the database lookup for ordinary conversation.
-        if not is_practice_request(user_text):
-            return
+        logger.info(f"DAY 5 HOOK: practice request detected: {user_text}")
 
         subject = detect_subject(user_text)
         level = detect_level(user_text)
 
-        logger.info(
-            f"DAY 5 HOOK: practice request detected. "
-            f"subject={subject}, level={level}"
-        )
-
-        # ----------------------------------------------------------
-        # SUBJECT NOT SPECIFIED
-        # ----------------------------------------------------------
-
         if subject is None:
-
             await self.session.say(
                 "Sure. Which subject would you like to practice?",
                 allow_interruptions=True,
             )
-
             raise StopResponse()
 
-        # ----------------------------------------------------------
-        # REAL POSTGRESQL LOOKUP
-        # ----------------------------------------------------------
-
         try:
-
-            exercise = await fetch_exercise(
-                subject,
-                level,
-            )
-
+            exercise = await fetch_exercise(subject, level)
         except Exception as e:
-
-            logger.error(
-                f"DAY 5 HOOK: exercise database lookup failed: {e}"
-            )
-
+            logger.error(f"DAY 5 HOOK: database lookup failed: {e}")
             await self.session.say(
                 "I cannot reach my practice question bank right now. "
                 "I can still explain the topic directly if you would like.",
                 allow_interruptions=True,
             )
-
             raise StopResponse()
-
-        # ----------------------------------------------------------
-        # NO DATA
-        # ----------------------------------------------------------
 
         if exercise is None:
-
-            logger.info(
-                f"DAY 5 HOOK: no exercise found for "
-                f"subject={subject}, level={level}"
-            )
-
             await self.session.say(
-                f"I do not have a practice question for "
-                f"{subject} at that level yet. "
-                f"I can explain the topic or help you practice "
-                f"another subject.",
+                f"I do not have a practice question for {subject} at that level yet.",
                 allow_interruptions=True,
             )
-
             raise StopResponse()
 
-        # ----------------------------------------------------------
-        # DAY 5 STEP 5 - SOURCE + DATE
-        # ----------------------------------------------------------
-
         source_date = "August 10, 2026"
-
         spoken_response = (
-            "Here's a question from my local hand-built "
-            "practice set, prepared on "
-            f"{source_date}. "
+            f"Here's a question from my local hand-built practice set, prepared on {source_date}. "
             f"{exercise['question']}"
         )
 
-        # ----------------------------------------------------------
-        # VERIFICATION LOGS
-        # ----------------------------------------------------------
-
-        logger.info(
-            "DAY 5 FUNCTION LOOKUP: SUCCESS"
-        )
-
-        logger.info(
-            f"DAY 5 FUNCTION LOOKUP: "
-            f"subject={exercise['subject']}"
-        )
-
-        logger.info(
-            f"DAY 5 FUNCTION LOOKUP: "
-            f"level={exercise['level']}"
-        )
-
-        logger.info(
-            f"DAY 5 FUNCTION LOOKUP: "
-            f"topic={exercise['topic']}"
-        )
-
-        logger.info(
-            f"DAY 5 FUNCTION LOOKUP: "
-            f"exact question={exercise['question']}"
-        )
-
-        # ----------------------------------------------------------
-        # SPEAK THE REAL DATABASE QUESTION
-        # ----------------------------------------------------------
-
-        await self.session.say(
-            spoken_response,
-            allow_interruptions=True,
-        )
-
-        # Stop Cohere from generating another answer.
+        await self.session.say(spoken_response, allow_interruptions=True)
         raise StopResponse()
 
     # --------------------------------------------------------------
-    # DAY 4 - CALLER LOOKUP
+    # FUNCTION TOOLS
     # --------------------------------------------------------------
 
     @function_tool
-    async def lookup_caller(
-        self,
-    ) -> str:
+    async def lookup_caller(self) -> str:
         """Look up existing caller information and learning facts."""
-
         try:
-
-            record = await get_latest_record(
-                self.user_id
-            )
-
+            record = await get_latest_record(self.user_id)
         except Exception as e:
-
-            logger.error(
-                f"lookup_caller DB error: {e}"
-            )
-
-            return (
-                "Caller lookup isn't available right now "
-                "(database unreachable). Continue the conversation "
-                "normally without relying on saved history for this turn."
-            )
+            return "Caller lookup isn't available right now."
 
         if record:
-
-            return (
-                f"Caller Found: Name: {record['name']}, "
-                f"Language: {record['language_preference']}, "
-                f"Learning Facts: {record['facts']}"
-            )
-
+            return f"Caller Found: Name: {record['name']}, Facts: {record['facts']}"
         return "No previous record found for this caller."
-
-    # --------------------------------------------------------------
-    # DAY 4 - SAVE CALLER INFO
-    # --------------------------------------------------------------
 
     @function_tool
     async def save_caller_info(
@@ -805,89 +575,48 @@ class Assistant(Agent):
         struggles_or_mistakes: str,
     ) -> str:
         """Save caller profile and learning facts after verbal permission."""
-
         facts = {
             "current_level": current_level,
             "topics_covered": topics_covered,
             "struggles_or_mistakes": struggles_or_mistakes,
         }
-
         try:
-
-            await persist_caller_record(
-                self.user_id,
-                name,
-                language_preference,
-                facts,
-            )
-
+            await persist_caller_record(self.user_id, name, language_preference, facts)
         except Exception as e:
-
-            logger.error(
-                f"save_caller_info DB error: {e}"
-            )
-
-            return (
-                "Saving isn't available right now "
-                "(database unreachable). "
-                "Let the learner know you couldn't save that just now, "
-                "but you can keep helping them for the rest of this call."
-            )
-
-        return (
-            "Caller profile and learning facts successfully "
-            "saved to database."
-        )
-
-    # --------------------------------------------------------------
-    # DAY 5 - FUNCTION TOOL
-    # --------------------------------------------------------------
+            return "Saving isn't available right now."
+        return "Caller profile and learning facts successfully saved."
 
     @function_tool
-    async def fetch_next_exercise(
-        self,
-        subject: str,
-        level: str,
-    ) -> str:
-        """
-        Fetch a real practice question from the local PostgreSQL
-        exercise dataset for the requested subject and level.
-        """
-
+    async def fetch_next_exercise(self, subject: str, level: str) -> str:
+        """Fetch a practice question from the PostgreSQL exercise dataset."""
         try:
-
-            exercise = await fetch_exercise(
-                subject,
-                level,
-            )
-
+            exercise = await fetch_exercise(subject, level)
         except Exception as e:
-
-            logger.error(
-                f"Exercise lookup failed: {e}"
-            )
-
-            return (
-                "The practice question bank isn't reachable right now. "
-                "Apologize briefly to the learner, and offer to explain "
-                "the concept directly instead of giving a practice question."
-            )
+            return "The practice question bank isn't reachable right now."
 
         if exercise is None:
+            return f"No exercise is available yet for {subject}."
 
-            return (
-                f"No exercise is available yet for the subject '{subject}'. "
-                f"Let the learner know this topic isn't in the practice "
-                f"bank yet, and offer to explain the concept instead."
+        return f"Exercise found: {exercise['question']} Answer: {exercise['answer']}"
+
+    @function_tool
+    async def end_call(self) -> str:
+        """Call this when the learner wants to stop, opt out, or hang up
+        (e.g. says 'stop calling', 'hang up', 'not interested', 'remove me').
+        Say a brief goodbye BEFORE calling this, since the call will be
+        disconnected immediately after this tool runs."""
+        try:
+            # Give the goodbye audio a moment to actually play out over SIP
+            await asyncio.sleep(1.5)
+
+            await self._ctx.api.room.delete_room(
+                api.DeleteRoomRequest(room=self._ctx.room.name)
             )
-
-        return (
-            f"Exercise found - subject: {exercise['subject']}, "
-            f"level: {exercise['level']}, "
-            f"topic: {exercise['topic']}. "
-            f"Question: {exercise['question']} "
-            f"Correct answer: {exercise['answer']}"
-        )
+            logger.info(f"Call ended via end_call tool for room={self._ctx.room.name}")
+            return "Call ended successfully."
+        except Exception as e:
+            logger.error(f"end_call failed: {e}")
+            return "Failed to end the call cleanly."
 
 
 # ------------------------------------------------------------------
@@ -897,376 +626,159 @@ class Assistant(Agent):
 server = AgentServer()
 
 
-def prewarm(
-    proc: JobProcess,
-):
+def prewarm(proc: JobProcess):
     proc.userdata["vad"] = silero.VAD.load()
 
 
 server.setup_fnc = prewarm
 
 
-@server.rtc_session(
-    agent_name="my-agent"
-)
-async def my_agent(
-    ctx: JobContext,
-):
+@server.rtc_session(agent_name="my-agent")
+async def my_agent(ctx: JobContext):
 
-    ctx.log_context_fields = {
-        "room": ctx.room.name,
-    }
+    ctx.log_context_fields = {"room": ctx.room.name}
 
-    # --------------------------------------------------------------
-    # COHERE API KEY
-    # --------------------------------------------------------------
-
-    cohere_key = os.getenv(
-        "COHERE_API_KEY",
-        "",
-    ).strip()
-
-    if not cohere_key:
-
-        logger.error(
-            "COHERE_API_KEY is missing! "
-            "Make sure COHERE_API_KEY is set in .env.local."
-        )
-
-    # --------------------------------------------------------------
-    # AGENT SESSION - COHERE
-    # --------------------------------------------------------------
+    cohere_key = os.getenv("COHERE_API_KEY", "").strip()
 
     session = AgentSession(
-
-        stt=deepgram.STT(
-            model="nova-3",
-            language="multi",
-        ),
-
+        stt=deepgram.STT(model="nova-3", language="multi"),
         llm=openai.LLM(
             model=COHERE_MODEL,
             api_key=cohere_key,
             base_url=COHERE_BASE_URL,
         ),
-
-        tts=murf.TTS(
-            model="falcon-2",
-            voice="Alicia",
-        ),
-
+        tts=murf.TTS(model="falcon-2", voice="Alicia"),
         vad=ctx.proc.userdata["vad"],
-
         preemptive_generation=False,
     )
 
-    # --------------------------------------------------------------
-    # CONNECT TO USER FIRST
-    # --------------------------------------------------------------
-
     await ctx.connect()
+    user_id = await resolve_user_id_async(ctx)
 
-    user_id = await resolve_user_id_async(
-        ctx
-    )
+    # ==============================================================
+    # AUTO-CLEANUP WHEN THE CALLEE HANGS UP (e.g. Linphone hangup button)
+    # ==============================================================
+    # If the SIP leg disconnects from the other side, the LiveKit room
+    # doesn't automatically go away. Without this, the agent keeps running
+    # and someone has to manually run a delete_room script to clean up.
 
-    logger.info(
-        f"Resolved caller user_id: {user_id}"
-    )
+    async def _cleanup_room_after_sip_hangup():
+        try:
+            await ctx.api.room.delete_room(
+                api.DeleteRoomRequest(room=ctx.room.name)
+            )
+            logger.info(
+                f"Room deleted after SIP participant hangup: room={ctx.room.name}"
+            )
+        except Exception as e:
+            logger.error(f"Failed to delete room after SIP disconnect: {e}")
 
-    # --------------------------------------------------------------
-    # START SESSION
-    # --------------------------------------------------------------
+    def _on_participant_disconnected(participant: rtc.RemoteParticipant):
+        logger.info(
+            f"participant_disconnected fired: identity={participant.identity}, kind={participant.kind}"
+        )
+        if participant.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP:
+            logger.info(
+                f"SIP participant '{participant.identity}' hung up - ending call and cleaning up room."
+            )
+            asyncio.create_task(_cleanup_room_after_sip_hangup())
+
+    ctx.room.on("participant_disconnected", _on_participant_disconnected)
 
     await session.start(
-
-        agent=Assistant(
-            user_id=user_id
-        ),
-
+        agent=Assistant(user_id=user_id, ctx=ctx),
         room=ctx.room,
-
         room_options=room_io.RoomOptions(
-
             audio_input=room_io.AudioInputOptions(
-
                 noise_cancellation=lambda params: (
                     noise_cancellation.BVCTelephony()
-                    if params.participant.kind
-                    == rtc.ParticipantKind.PARTICIPANT_KIND_SIP
+                    if params.participant.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP
                     else noise_cancellation.BVC()
                 ),
-
             ),
-
         ),
-
     )
 
     # ==============================================================
-    # DYNAMIC GREETING
+    # DAY 6 - DYNAMIC GREETING / OUTBOUND COMPLIANCE SELECTION
     # ==============================================================
 
-    try:
+    # 1. If this call is over SIP (Telephony/Outbound Phone Call)
+    if is_sip_participant(ctx):
+        greeting_text = OUTBOUND_OPENING
+        logger.info("Outbound SIP participant detected - using compliant Day 6 opening script.")
 
-        caller_record = await get_latest_record(
-            user_id
-        )
-
-    except Exception as e:
-
-        logger.error(
-            "Could not look up caller record, "
-            f"falling back to first-time greeting: {e}"
-        )
-
-        caller_record = None
-
-    if caller_record is None:
-
-        greeting_text = FIRST_TIME_GREETING
-
+    # 2. Standard Web/Inbound Dynamic Greeting Flow
     else:
+        try:
+            caller_record = await get_latest_record(user_id)
+        except Exception as e:
+            caller_record = None
 
-        name = caller_record.get(
-            "name",
-            "there",
-        )
-
-        facts = caller_record.get(
-            "facts",
-            {},
-        )
-
-        if isinstance(
-            facts,
-            dict,
-        ):
-
-            previous_topic = facts.get(
-                "topics_covered",
-                "",
-            )
-
-            if not previous_topic:
-
-                previous_messages = facts.get(
-                    "last_session_messages",
-                    [],
-                )
-
-                if previous_messages:
-
-                    previous_topic = (
-                        previous_messages[0]
-                    )
-
+        if caller_record is None:
+            greeting_text = FIRST_TIME_GREETING
         else:
-
-            previous_topic = str(
-                facts
-            )
-
-        if not previous_topic:
-
+            name = caller_record.get("name", "there")
+            facts = caller_record.get("facts", {})
             previous_topic = (
-                "our previous learning session"
+                facts.get("topics_covered", "our previous learning session")
+                if isinstance(facts, dict) else "our previous learning session"
+            )
+            greeting_text = (
+                f"Welcome back, {name}! Last time we spoke about {previous_topic}. "
+                f"Would you like to continue with that, or practice something else today?"
             )
 
-        if len(previous_topic) > 100:
-
-            previous_topic = (
-                previous_topic[:100]
-                + "..."
-            )
-
-        greeting_text = (
-            f"Welcome back, {name}! "
-            f"Last time we spoke about {previous_topic}. "
-            f"Would you like to continue with that, "
-            f"or is there something else I can help you "
-            f"with today?"
-        )
-
-    await session.say(
-        greeting_text,
-        allow_interruptions=True,
-    )
+    await session.say(greeting_text, allow_interruptions=True)
 
     # ==============================================================
     # AUTOMATIC SHUTDOWN / DISCONNECT SAVING
     # ==============================================================
 
     async def _do_shutdown_save():
-
         chat_history = []
+        if hasattr(session, "history"):
+            chat_history = (
+                session.history.messages()
+                if callable(getattr(session.history, "messages", None))
+                else getattr(session.history, "messages", [])
+            )
 
-        if hasattr(
-            session,
-            "history",
-        ):
-
-            if callable(
-                getattr(
-                    session.history,
-                    "messages",
-                    None,
-                )
-            ):
-
-                chat_history = (
-                    session.history.messages()
-                )
-
-            elif isinstance(
-                getattr(
-                    session.history,
-                    "messages",
-                    None,
-                ),
-                list,
-            ):
-
-                chat_history = (
-                    session.history.messages
-                )
-
-        user_texts = []
-
-        for msg in chat_history:
-
-            if (
-                hasattr(msg, "role")
-                and msg.role == "user"
-                and hasattr(msg, "content")
-                and msg.content
-            ):
-
-                content = msg.content
-
-                if isinstance(
-                    content,
-                    list,
-                ):
-
-                    content = " ".join(
-                        str(item)
-                        for item in content
-                    )
-
-                user_texts.append(
-                    str(content)
-                )
+        user_texts = [
+            str(msg.content) for msg in chat_history
+            if hasattr(msg, "role") and msg.role == "user" and getattr(msg, "content", None)
+        ]
 
         if not user_texts:
-
-            logger.info(
-                "No user conversation found to save."
-            )
-
             return
 
-        existing = (
-            db.get_caller_record(
-                user_id
-            )
-            or {}
-        )
-
-        name = existing.get(
-            "name",
-            "Learner",
-        )
-
-        language = existing.get(
-            "language_preference",
-            "English",
-        )
-
-        existing_facts = existing.get(
-            "facts",
-            {},
-        )
-
-        if not isinstance(
-            existing_facts,
-            dict,
-        ):
-
-            existing_facts = {}
-
-        fallback_topic = existing_facts.get(
-            "topics_covered",
-            "a recent learning session",
-        )
-
-        # ----------------------------------------------------------
-        # COHERE TOPIC SUMMARY
-        # ----------------------------------------------------------
+        existing = db.get_caller_record(user_id) or {}
+        name = existing.get("name", "Learner")
+        language = existing.get("language_preference", "English")
+        existing_facts = existing.get("facts", {}) if isinstance(existing.get("facts"), dict) else {}
 
         previous_topic = await summarize_session_topic(
-            user_texts,
-            fallback=fallback_topic,
+            user_texts, fallback=existing_facts.get("topics_covered", "a recent session")
         )
 
         facts = {
-
-            "current_level": existing_facts.get(
-                "current_level",
-                "Intermediate",
-            ),
-
+            "current_level": existing_facts.get("current_level", "Intermediate"),
             "topics_covered": previous_topic,
-
-            "struggles_or_mistakes": existing_facts.get(
-                "struggles_or_mistakes",
-                "None",
-            ),
-
+            "struggles_or_mistakes": existing_facts.get("struggles_or_mistakes", "None"),
             "last_session_messages": user_texts[-5:],
         }
 
-        db.save_caller_record(
-            user_id,
-            name,
-            language,
-            facts,
-        )
-
-        logger.info(
-            f"Auto-saved session progress "
-            f"for user_id={user_id}."
-        )
+        db.save_caller_record(user_id, name, language, facts)
+        logger.info(f"Auto-saved session progress for user_id={user_id}.")
 
     async def on_shutdown():
-
         try:
-
-            await asyncio.wait_for(
-                _do_shutdown_save(),
-                timeout=8.0,
-            )
-
-        except asyncio.TimeoutError:
-
-            logger.error(
-                "Shutdown save timed out entirely."
-            )
-
+            await asyncio.wait_for(_do_shutdown_save(), timeout=8.0)
         except Exception as e:
+            logger.error(f"Auto-save on shutdown failed: {e}")
 
-            logger.error(
-                f"Auto-save on shutdown failed: {e}"
-            )
+    ctx.add_shutdown_callback(on_shutdown)
 
-    ctx.add_shutdown_callback(
-        on_shutdown
-    )
-
-
-# ------------------------------------------------------------------
-# RUN APPLICATION
-# ------------------------------------------------------------------
 
 if __name__ == "__main__":
     cli.run_app(server)
