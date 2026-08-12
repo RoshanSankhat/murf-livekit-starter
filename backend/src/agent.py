@@ -4,6 +4,7 @@ import os
 
 from dotenv import load_dotenv
 from livekit import api, rtc
+from escalation_utils import redact_pii, send_escalation_email, format_escalation_summary
 
 from livekit.agents import (
     Agent,
@@ -42,6 +43,7 @@ db.init_db()
 # Day 5: initialize and seed the exercises lookup table
 db.init_exercises_db()
 db.seed_exercises_if_empty()
+db.init_escalations_db()
 
 logger = logging.getLogger("agent")
 
@@ -196,13 +198,36 @@ Let us choose something you would like to learn."
 - Never Diagnose:
   NEVER suggest or mention learning disabilities.
 
-- Escalation:
-  If the learner is frustrated or asks for human support,
-  run the escalation script.
+- Escalation (DAY 7 - HUMAN HELP):
+  There are exactly two situations where you must stop and offer to
+  bring in a human teacher instead of continuing on your own:
 
-ESCALATION SCRIPT:
-"If you are finding this topic difficult, I can connect you
-with our senior teacher. Would you like me to forward your request?"
+  1. LEARNER DISTRESS: the learner sounds upset, frustrated, says they
+     want to stop, or is crying.
+  2. NEEDS TEACHER: the learner asks for something outside a tutor's
+     scope (grading a real assessment, a curriculum/report-card
+     decision), or you have explained the same concept three times
+     and the learner still isn't understanding it.
+
+  When you detect either situation, do NOT call create_escalation yet.
+  First say plainly what you noticed, and ask permission to send a
+  short summary to a teacher. Tell the learner exactly what you want
+  to include: their name, what happened, what you already tried,
+  how urgent it feels, their language, and how they'd like to be
+  followed up with. Never mention including a password, OTP, PIN, or
+  account number - those are never part of the summary.
+
+  Only call create_escalation if the learner clearly says yes.
+  If they say no, do not call the tool. Continue helping as best you
+  can and let them know they can ask for a teacher any time.
+
+  After a successful escalation, tell the learner the reference ID
+  you get back and an honest next step (e.g. "usually picked up
+  within a school day" - never promise an immediate reply unless
+  that's true).
+
+  Do NOT escalate for normal tutoring difficulty, a single wrong
+  answer, or routine questions you can answer yourself.
 
 STYLE (OPTIMIZED FOR SPEECH):
 - Keep sentences short and easy to understand.
@@ -617,6 +642,90 @@ class Assistant(Agent):
         except Exception as e:
             logger.error(f"end_call failed: {e}")
             return "Failed to end the call cleanly."
+    @function_tool
+    async def create_escalation(
+        self,
+        reason_code: str,
+        what_happened: str,
+        what_agent_checked: str,
+        urgency: str,
+        language: str,
+        follow_up_method: str,
+    ) -> str:
+        """Create (or update) a human-help request for a teacher.
+
+        ONLY call this AFTER the learner has explicitly said yes to
+        sharing a summary with a teacher. Never call this without
+        having asked for permission first in the same turn or the one
+        before it.
+
+        Args:
+            reason_code: "learner_distress" or "needs_teacher".
+            what_happened: one or two sentences, no private data
+                (no passwords, OTPs, PINs, or account numbers).
+            what_agent_checked: what you already tried before escalating.
+            urgency: "low", "medium", "high", or "emergency".
+            language: the learner's preferred language.
+            follow_up_method: how they'd like to be followed up with,
+                e.g. "call back", "email", "next scheduled session".
+        """
+        what_happened = redact_pii(what_happened)
+        what_agent_checked = redact_pii(what_agent_checked)
+
+        try:
+            existing = await asyncio.to_thread(
+                db.find_open_escalation, self.user_id, reason_code
+            )
+        except Exception as e:
+            logger.error(f"DAY 7: escalation dedup lookup failed: {e}")
+            existing = None
+
+        if existing:
+            note = (
+                f"New trigger: {what_happened} | "
+                f"Checked: {what_agent_checked} | Urgency now: {urgency}"
+            )
+            try:
+                await asyncio.to_thread(
+                    db.append_escalation_note, existing["reference_id"], note
+                )
+                send_escalation_email(
+                    subject=f"[UPDATE] Human help request {existing['reference_id']} ({urgency})",
+                    body=f"Existing request updated with a new occurrence.\n\n{note}",
+                )
+            except Exception as e:
+                logger.error(f"DAY 7: escalation update failed: {e}")
+                return "I couldn't update the existing request right now."
+
+            return (
+                f"This is already being looked at, reference {existing['reference_id']}. "
+                "I've added your latest update to that request."
+            )
+
+        try:
+            record = await asyncio.to_thread(
+                db.create_escalation_record,
+                self.user_id,
+                reason_code,
+                what_happened,
+                what_agent_checked,
+                urgency,
+                language,
+                follow_up_method,
+            )
+            send_escalation_email(
+                subject=f"[{urgency.upper()}] New human help request {record['reference_id']}",
+                body=format_escalation_summary(record),
+            )
+        except Exception as e:
+            logger.error(f"DAY 7: escalation creation failed: {e}")
+            return "I couldn't create the request right now. Please try asking again shortly."
+
+        return (
+            f"I've created request {record['reference_id']} for a teacher to follow up. "
+            f"Urgency: {urgency}. This isn't an emergency line, so it's usually picked up "
+            "within a school day, not immediately."
+        )
 
 
 # ------------------------------------------------------------------

@@ -244,3 +244,187 @@ def get_exercise(subject: str, level: str):
     conn.close()
 
     return dict(row) if row else None
+# ------------------------------------------------------------------
+# DAY 7: HUMAN-HELP ESCALATION
+# ------------------------------------------------------------------
+# Two reasons an escalation is created for the Learning & Literacy track:
+#   - learner_distress : learner is upset, frustrated, or wants to stop
+#   - needs_teacher     : grading, a curriculum decision, or the same
+#                         concept explained 3+ times with no success
+# Only ever inserted after the agent has verbally asked for permission.
+
+import uuid
+
+
+def init_escalations_db():
+    """Initialize the escalations table if it doesn't exist."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS escalations (
+            reference_id VARCHAR(20) PRIMARY KEY,
+            user_id VARCHAR(255) NOT NULL,
+            reason_code VARCHAR(50) NOT NULL,
+            what_happened TEXT NOT NULL,
+            what_agent_checked TEXT NOT NULL,
+            urgency VARCHAR(20) NOT NULL,
+            language VARCHAR(100),
+            follow_up_method VARCHAR(255),
+            status VARCHAR(20) NOT NULL DEFAULT 'open',
+            notes TEXT DEFAULT '',
+            created_at TIMESTAMP WITH TIME ZONE,
+            updated_at TIMESTAMP WITH TIME ZONE
+        );
+        """)
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+def new_escalation_reference_id() -> str:
+    return "ESC-" + uuid.uuid4().hex[:8].upper()
+
+
+def find_open_escalation(user_id: str, reason_code: str):
+    """Same learner + same reason, still open or in_progress -> existing ticket."""
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+    cursor.execute(
+        """
+        SELECT * FROM escalations
+        WHERE user_id = %s AND reason_code = %s
+          AND status IN ('open', 'in_progress')
+        ORDER BY created_at DESC
+        LIMIT 1;
+        """,
+        (user_id, reason_code),
+    )
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return dict(row) if row else None
+
+
+def create_escalation_record(
+    user_id: str,
+    reason_code: str,
+    what_happened: str,
+    what_agent_checked: str,
+    urgency: str,
+    language: str,
+    follow_up_method: str,
+) -> dict:
+    """Insert a new escalation and return the created row."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    reference_id = new_escalation_reference_id()
+    now = datetime.now()
+
+    cursor.execute(
+        """
+        INSERT INTO escalations (
+            reference_id, user_id, reason_code, what_happened,
+            what_agent_checked, urgency, language, follow_up_method,
+            status, notes, created_at, updated_at
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'open', '', %s, %s);
+        """,
+        (
+            reference_id, user_id, reason_code, what_happened,
+            what_agent_checked, urgency, language, follow_up_method,
+            now, now,
+        ),
+    )
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    return {
+        "reference_id": reference_id,
+        "user_id": user_id,
+        "reason_code": reason_code,
+        "what_happened": what_happened,
+        "what_agent_checked": what_agent_checked,
+        "urgency": urgency,
+        "language": language,
+        "follow_up_method": follow_up_method,
+        "status": "open",
+        "created_at": now.isoformat(),
+    }
+
+
+def append_escalation_note(reference_id: str, note: str):
+    """Append a note to an existing escalation and bump updated_at."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    now = datetime.now()
+    stamped_note = f"\n[{now.isoformat()}] {note}"
+
+    cursor.execute(
+        """
+        UPDATE escalations
+        SET notes = notes || %s, updated_at = %s
+        WHERE reference_id = %s;
+        """,
+        (stamped_note, now, reference_id),
+    )
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+def set_escalation_status(reference_id: str, status: str):
+    """status must be one of: open, in_progress, resolved"""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        UPDATE escalations
+        SET status = %s, updated_at = %s
+        WHERE reference_id = %s;
+        """,
+        (status, datetime.now(), reference_id),
+    )
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+def get_escalation(reference_id: str):
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+    cursor.execute("SELECT * FROM escalations WHERE reference_id = %s;", (reference_id,))
+    row = cursor.fetchone()
+
+    cursor.close()
+    conn.close()
+    return dict(row) if row else None
+
+
+def list_escalations(status: str = None):
+    """Used by the dashboard. Pass status to filter, or None for all."""
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+    if status:
+        cursor.execute(
+            "SELECT * FROM escalations WHERE status = %s ORDER BY created_at DESC;",
+            (status,),
+        )
+    else:
+        cursor.execute("SELECT * FROM escalations ORDER BY created_at DESC;")
+
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return [dict(r) for r in rows]
