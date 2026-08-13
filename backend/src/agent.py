@@ -4,7 +4,11 @@ import os
 
 from dotenv import load_dotenv
 from livekit import api, rtc
-from escalation_utils import redact_pii, send_escalation_email, format_escalation_summary
+from escalation_utils import (
+    redact_pii,
+    send_escalation_email,
+    format_escalation_summary,
+)
 
 from livekit.agents import (
     Agent,
@@ -33,7 +37,6 @@ from openai import AsyncOpenAI
 # Import DB helper module
 import db
 
-
 # ------------------------------------------------------------------
 # DATABASE INITIALIZATION
 # ------------------------------------------------------------------
@@ -44,6 +47,7 @@ db.init_db()
 db.init_exercises_db()
 db.seed_exercises_if_empty()
 db.init_escalations_db()
+db.init_calls_db()
 
 logger = logging.getLogger("agent")
 
@@ -116,6 +120,11 @@ OBJECTIVES:
     practice question. Only call fetch_next_exercise if they say yes,
     or if they directly asked for practice/a question themselves.
     Speak the question naturally, not as a data dump.
+10a. EXERCISE COMPLETION TRACKING (DAY 8):
+    After you fetch a practice exercise with fetch_next_exercise and the
+    learner gives you their answer (whether correct or incorrect), call
+    mark_exercise_completed with the subject. Do this once per exercise,
+    right after they respond, before moving on.
 
 11. SOURCE HONESTY FOR PRACTICE QUESTIONS:
     Practice questions come from the local hand-built practice dataset.
@@ -260,6 +269,7 @@ FIRST_TIME_GREETING = (
 # CALLER IDENTITY
 # ------------------------------------------------------------------
 
+
 def resolve_user_id(ctx: JobContext) -> str:
     """Derive a stable per-caller user_id."""
     for participant in ctx.room.remote_participants.values():
@@ -286,9 +296,7 @@ async def resolve_user_id_async(
         await asyncio.sleep(poll_interval)
         elapsed += poll_interval
 
-    logger.warning(
-        "No named participant identity appeared - falling back to 'guest'."
-    )
+    logger.warning("No named participant identity appeared - falling back to 'guest'.")
 
     return "guest"
 
@@ -304,6 +312,7 @@ def is_sip_participant(ctx: JobContext) -> bool:
 # ------------------------------------------------------------------
 # DATABASE HELPERS
 # ------------------------------------------------------------------
+
 
 async def get_latest_record(user_id: str):
     """Retrieve the saved caller record for this specific user_id."""
@@ -467,9 +476,7 @@ async def summarize_session_topic(
     user_texts: list[str],
     fallback: str,
 ) -> str:
-    conversation_snippet = " | ".join(
-        t for t in user_texts[-8:] if t.strip()
-    )
+    conversation_snippet = " | ".join(t for t in user_texts[-8:] if t.strip())
 
     if len(conversation_snippet) < 15:
         return guess_topic_from_text(user_texts) or fallback
@@ -514,12 +521,14 @@ async def summarize_session_topic(
 # ASSISTANT
 # ------------------------------------------------------------------
 
+
 class Assistant(Agent):
 
     def __init__(self, user_id: str, ctx: JobContext) -> None:
         super().__init__(instructions=SYSTEM_PROMPT)
         self.user_id = user_id
         self._ctx = ctx
+        self.exercise_completed = False
 
     # --------------------------------------------------------------
     # DAY 5 - DETERMINISTIC LOOKUP HOOK
@@ -625,6 +634,18 @@ class Assistant(Agent):
         return f"Exercise found: {exercise['question']} Answer: {exercise['answer']}"
 
     @function_tool
+    async def mark_exercise_completed(self, subject: str) -> str:
+        """Call this once the learner has given their answer to a practice
+        exercise you fetched via fetch_next_exercise — regardless of whether
+        their answer was correct. This marks the call as successful for
+        tracking purposes."""
+        self.exercise_completed = True
+        logger.info(
+            f"Exercise marked completed for user_id={self.user_id}, subject={subject}"
+        )
+        return "Noted — exercise marked as completed."
+
+    @function_tool
     async def end_call(self) -> str:
         """Call this when the learner wants to stop, opt out, or hang up
         (e.g. says 'stop calling', 'hang up', 'not interested', 'remove me').
@@ -642,6 +663,7 @@ class Assistant(Agent):
         except Exception as e:
             logger.error(f"end_call failed: {e}")
             return "Failed to end the call cleanly."
+
     @function_tool
     async def create_escalation(
         self,
@@ -763,6 +785,9 @@ async def my_agent(ctx: JobContext):
 
     await ctx.connect()
     user_id = await resolve_user_id_async(ctx)
+    call_channel = "sip" if is_sip_participant(ctx) else "web"
+    call_id = ctx.room.name
+    db.start_call_record(call_id, user_id, call_channel)
 
     # ==============================================================
     # AUTO-CLEANUP WHEN THE CALLEE HANGS UP (e.g. Linphone hangup button)
@@ -773,9 +798,7 @@ async def my_agent(ctx: JobContext):
 
     async def _cleanup_room_after_sip_hangup():
         try:
-            await ctx.api.room.delete_room(
-                api.DeleteRoomRequest(room=ctx.room.name)
-            )
+            await ctx.api.room.delete_room(api.DeleteRoomRequest(room=ctx.room.name))
             logger.info(
                 f"Room deleted after SIP participant hangup: room={ctx.room.name}"
             )
@@ -794,14 +817,16 @@ async def my_agent(ctx: JobContext):
 
     ctx.room.on("participant_disconnected", _on_participant_disconnected)
 
+    assistant = Assistant(user_id=user_id, ctx=ctx)
     await session.start(
-        agent=Assistant(user_id=user_id, ctx=ctx),
+        agent=assistant,
         room=ctx.room,
         room_options=room_io.RoomOptions(
             audio_input=room_io.AudioInputOptions(
                 noise_cancellation=lambda params: (
                     noise_cancellation.BVCTelephony()
-                    if params.participant.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP
+                    if params.participant.kind
+                    == rtc.ParticipantKind.PARTICIPANT_KIND_SIP
                     else noise_cancellation.BVC()
                 ),
             ),
@@ -815,7 +840,9 @@ async def my_agent(ctx: JobContext):
     # 1. If this call is over SIP (Telephony/Outbound Phone Call)
     if is_sip_participant(ctx):
         greeting_text = OUTBOUND_OPENING
-        logger.info("Outbound SIP participant detected - using compliant Day 6 opening script.")
+        logger.info(
+            "Outbound SIP participant detected - using compliant Day 6 opening script."
+        )
 
     # 2. Standard Web/Inbound Dynamic Greeting Flow
     else:
@@ -831,7 +858,8 @@ async def my_agent(ctx: JobContext):
             facts = caller_record.get("facts", {})
             previous_topic = (
                 facts.get("topics_covered", "our previous learning session")
-                if isinstance(facts, dict) else "our previous learning session"
+                if isinstance(facts, dict)
+                else "our previous learning session"
             )
             greeting_text = (
                 f"Welcome back, {name}! Last time we spoke about {previous_topic}. "
@@ -854,8 +882,11 @@ async def my_agent(ctx: JobContext):
             )
 
         user_texts = [
-            str(msg.content) for msg in chat_history
-            if hasattr(msg, "role") and msg.role == "user" and getattr(msg, "content", None)
+            str(msg.content)
+            for msg in chat_history
+            if hasattr(msg, "role")
+            and msg.role == "user"
+            and getattr(msg, "content", None)
         ]
 
         if not user_texts:
@@ -864,27 +895,41 @@ async def my_agent(ctx: JobContext):
         existing = db.get_caller_record(user_id) or {}
         name = existing.get("name", "Learner")
         language = existing.get("language_preference", "English")
-        existing_facts = existing.get("facts", {}) if isinstance(existing.get("facts"), dict) else {}
+        existing_facts = (
+            existing.get("facts", {}) if isinstance(existing.get("facts"), dict) else {}
+        )
 
         previous_topic = await summarize_session_topic(
-            user_texts, fallback=existing_facts.get("topics_covered", "a recent session")
+            user_texts,
+            fallback=existing_facts.get("topics_covered", "a recent session"),
         )
 
         facts = {
             "current_level": existing_facts.get("current_level", "Intermediate"),
             "topics_covered": previous_topic,
-            "struggles_or_mistakes": existing_facts.get("struggles_or_mistakes", "None"),
+            "struggles_or_mistakes": existing_facts.get(
+                "struggles_or_mistakes", "None"
+            ),
             "last_session_messages": user_texts[-5:],
         }
 
         db.save_caller_record(user_id, name, language, facts)
         logger.info(f"Auto-saved session progress for user_id={user_id}.")
-
+    async def _do_call_outcome_save():
+        outcome = "success" if assistant.exercise_completed else "failed"
+        failure_reason = None if outcome == "success" else "no_exercise_completed"
+        db.end_call_record(call_id, outcome, failure_reason)
+        logger.info(f"Call record closed: call_id={call_id}, outcome={outcome}")
     async def on_shutdown():
         try:
             await asyncio.wait_for(_do_shutdown_save(), timeout=8.0)
         except Exception as e:
             logger.error(f"Auto-save on shutdown failed: {e}")
+
+        try:
+            await asyncio.wait_for(_do_call_outcome_save(), timeout=8.0)
+        except Exception as e:
+            logger.error(f"Call outcome save on shutdown failed: {e}")
 
     ctx.add_shutdown_callback(on_shutdown)
 

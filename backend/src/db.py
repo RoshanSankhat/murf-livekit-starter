@@ -428,3 +428,124 @@ def list_escalations(status: str = None):
     cursor.close()
     conn.close()
     return [dict(r) for r in rows]
+# ------------------------------------------------------------------
+# DAY 8: CALL ANALYTICS
+# ------------------------------------------------------------------
+# Success definition (Learning & Literacy track):
+#   A call is "successful" if the learner received a practice exercise
+#   AND attempted/answered it before the call ended.
+# Everything else is recorded as "failed", with a failure_reason.
+# No transcript or PII is stored here - only outcome metadata.
+
+def init_calls_db():
+    """Initialize the calls table if it doesn't exist."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS calls (
+            call_id VARCHAR(64) PRIMARY KEY,
+            user_id VARCHAR(255),
+            channel VARCHAR(20) NOT NULL,
+            outcome VARCHAR(20) NOT NULL DEFAULT 'failed',
+            failure_reason VARCHAR(50),
+            started_at TIMESTAMP WITH TIME ZONE NOT NULL,
+            ended_at TIMESTAMP WITH TIME ZONE,
+            duration_seconds INTEGER
+        );
+        """)
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+def start_call_record(call_id: str, user_id: str, channel: str):
+    """Insert a row the moment a call begins."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    now = datetime.now()
+    cursor.execute(
+        """
+        INSERT INTO calls (call_id, user_id, channel, outcome, started_at)
+        VALUES (%s, %s, %s, 'failed', %s)
+        ON CONFLICT (call_id) DO NOTHING;
+        """,
+        (call_id, user_id, channel, now),
+    )
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+def end_call_record(call_id: str, outcome: str, failure_reason: str = None):
+    """Close out a call row with its final outcome ('success' or 'failed')."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    now = datetime.now()
+    cursor.execute(
+        """
+        UPDATE calls
+        SET outcome = %s,
+            failure_reason = %s,
+            ended_at = %s,
+            duration_seconds = EXTRACT(EPOCH FROM (%s - started_at))::INT
+        WHERE call_id = %s;
+        """,
+        (outcome, failure_reason, now, now, call_id),
+    )
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+def get_call_stats():
+    """Used by the dashboard for the three headline numbers."""
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+    cursor.execute("""
+        SELECT
+            COUNT(*) AS total,
+            COUNT(*) FILTER (WHERE outcome = 'success') AS successful,
+            COUNT(*) FILTER (WHERE outcome = 'failed') AS failed
+        FROM calls;
+        """)
+    row = cursor.fetchone()
+
+    cursor.close()
+    conn.close()
+    return dict(row)
+
+
+def list_calls(limit: int = 25):
+    """Recent calls for the dashboard's history table. No transcript/PII."""
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+    cursor.execute(
+        """
+        SELECT call_id, channel, outcome, failure_reason,
+               started_at, ended_at, duration_seconds
+        FROM calls
+        ORDER BY started_at DESC
+        LIMIT %s;
+        """,
+        (limit,),
+    )
+    rows = cursor.fetchall()
+
+    cursor.close()
+    conn.close()
+
+    for r in rows:
+        if r.get("started_at"):
+            r["started_at"] = r["started_at"].isoformat()
+        if r.get("ended_at"):
+            r["ended_at"] = r["ended_at"].isoformat()
+
+    return [dict(r) for r in rows]
