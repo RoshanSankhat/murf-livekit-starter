@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+from MathsPracticeAgent import MathsPracticeAgent
 
 from dotenv import load_dotenv
 from livekit import api, rtc
@@ -548,6 +549,9 @@ class Assistant(Agent):
 
         subject = detect_subject(user_text)
         level = detect_level(user_text)
+        if subject == "Mathematics":
+            logger.info("DAY 9: maths practice request - deferring to handoff tool, skipping Day 5 hook.")
+            return
 
         if subject is None:
             await self.session.say(
@@ -644,6 +648,20 @@ class Assistant(Agent):
             f"Exercise marked completed for user_id={self.user_id}, subject={subject}"
         )
         return "Noted — exercise marked as completed."
+    @function_tool
+    async def handoff_to_maths_specialist(self) -> Agent:
+        """Call this when the learner specifically wants to practice
+        maths / mathematics problems (e.g. they ask for maths practice,
+        a maths question, or want to work through arithmetic, fractions,
+        algebra, or similar). Do NOT call this for general maths
+        explanations or one-off math facts you can already answer
+        yourself - only when they want focused maths practice."""
+        logger.info(f"DAY 9: handing off to MathsPracticeAgent for user_id={self.user_id}")
+        await self.session.say(
+            "I'll connect you to our maths practice specialist.",
+            allow_interruptions=True,
+        )
+        return MathsPracticeAgent(chat_ctx=self.chat_ctx, user_id=self.user_id)
 
     @function_tool
     async def end_call(self) -> str:
